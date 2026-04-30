@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Document Builder</title>
+    <link
+      rel="stylesheet"
+      href="https://pd-js-sdk.s3.amazonaws.com/latest/pandadoc-js-sdk.css"
+    />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+          Cantarell, sans-serif;
+        overflow: auto;
+        height: 100%;
+        width: 100%;
+      }
+
+      #pandadoc-container {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        overflow: auto;
+      }
+
+      #pandadoc-container iframe {
+        width: 100%;
+        flex: 1;
+        min-height: 600px;
+        height: 95vh;
+        border: none;
+        /*padding-top: 2rem;*/
+      }
+
+      .loading {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        font-size: 16px;
+        color: #666;
+      }
+
+      .error {
+        color: red;
+      }
+      .EmbeddedAppModal-close {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pandadoc-container">
+      <div class="loading">Loading PandaDoc...</div>
+    </div>
+
+    <script
+      type="text/javascript"
+      src="https://cdn.jsdelivr.net/npm/copper-sdk@latest/dist/copper-sdk.min.js"
+    ></script>
+    <script>
+      var sdk = window.Copper.init();
+      sdk.setAppUI({
+        count: 5,
+        width: '80vw',
+        height: '80vh',
+        disableAddButton: true,
+        showActionBar: true,
+        isActionBarActive: true,
+        allowModals: false,
+      });
+      var context = null;
+      var entityId = null;
+      var entityType = null;
+      var documentsUI = null;
+      /**
+       * Signal that modal is closing via localStorage
+       * Called from modal iframe when it's about to close/unload
+       */
+      function signalModalClose() {
+        try {
+          localStorage.setItem('pandadoc_modal_closed', Date.now().toString());
+        } catch (e) {
+          console.log('localStorage not available');
+        }
+      }
+      /**
+       * Listen for modal close signal from other iframes via localStorage
+       * @param {Function} callback - Function to call when modal close is detected
+       */
+      function listenForModalClose(callback) {
+        window.addEventListener('storage', function (event) {
+          if (event.key === 'pandadoc_modal_closed') {
+            console.log('Modal close signal received via localStorage');
+            callback();
+          }
+        });
+      }
+
+      /**
+       * Convert singular entity type to plural for PandaDoc API
+       */
+      function getPluralEntityType(singularType) {
+        const typeMap = {
+          lead: 'leads',
+          company: 'companies',
+          person: 'people',
+          opportunity: 'opportunities',
+          deal: 'deals',
+          contact: 'contacts',
+          account: 'accounts',
+        };
+        return typeMap[singularType] || singularType + 's';
+      }
+
+      /**
+       * Load external script dynamically
+       */
+      function loadScript(src) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = src;
+          script.onload = resolve;
+          script.onerror = reject;
+          document.head.appendChild(script);
+        });
+      }
+
+      /**
+       * Main PandaDoc embed function - displays documents related to the specific entity type/id
+       * @param {Object} context - Context object containing entity information
+       */
+      async function PD_embed(context) {
+        try {
+          // Load PandaDoc JavaScript SDK if not already loaded
+          if (typeof PandaDoc === 'undefined') {
+            await loadScript(
+              'https://pd-js-sdk.s3.amazonaws.com/latest/pandadoc-js-sdk.js',
+            );
+          }
+
+          const container = document.getElementById('pandadoc-container');
+          container.innerHTML = ''; // Clear loading message
+
+          documentsUI = new PandaDoc.DefaultView();
+          documentsUI.init({
+            el: container,
+            initOptions: {
+              externalEditor: true,
+              isExternalRunner: true,
+              provider: {
+                // Copper provider slug
+                name: 'copper',
+              },
+            },
+            data: {
+              // Integration context details to render PandaDoc entities linked to Copper entity
+              sourceEntity: {
+                type: entityType, // 'accounts', 'contacts', or 'deals'
+                id: entityId,
+              },
+            },
+            events: {
+              onDocumentCreate: () => {
+                sdk.showModal({
+                  entityType: entityType,
+                  entityId: entityId,
+                  displayHeader: true,
+                });
+              },
+              onDocumentOpen(documentInfo) {
+                window.open(documentInfo.documentUrl, '_blank');
+              },
+            },
+          });
+        } catch (error) {
+          console.error('Error loading PandaDoc embed:', error);
+          document.getElementById('pandadoc-container').innerHTML =
+            '<div class="loading error">Failed to load PandaDoc. Please try again.</div>';
+        }
+      }
+
+      /**
+       * PandaDoc wizard function - handles document creation in modal
+       * @param {Object} context - Context object containing entity information
+       */
+      async function PD_wizard(context) {
+        try {
+          // Load PandaDoc JavaScript SDK if not already loaded
+          if (typeof PandaDoc === 'undefined') {
+            await loadScript(
+              'https://pd-js-sdk.s3.amazonaws.com/latest/pandadoc-js-sdk.js',
+            );
+          }
+
+          const container = document.getElementById('pandadoc-container');
+          container.innerHTML = ''; // Clear existing content
+
+          // Determine recipients based on entity type
+          let recipients = [];
+
+          const wizardUI = new PandaDoc.DocEditor();
+          wizardUI.show({
+            el: container,
+            initOptions: {
+              externalEditor: false,
+              hideCloseButton: true,
+              provider: {
+                name: 'copper',
+              },
+            },
+            data: {
+              // Pass the same entity context to the wizard
+              // This allows PandaDoc to automatically link the created document
+              // to the current Copper entity (company, lead, or opportunity)
+              sourceEntity: {
+                type: entityType,
+                id: entityId,
+              },
+              recipients: recipients,
+            },
+            events: {
+              onClose: () => {
+                wizardUI.destroy();
+                // Notify activity_panel to refresh documents list
+                sdk.publishMessage('refreshDocuments', 'activity_panel', {});
+                sdk.closeModal();
+              },
+              onDocumentCreated: (documentData) => {
+                wizardUI.destroy();
+                // Notify activity_panel to refresh documents list
+                sdk.publishMessage('refreshDocuments', 'activity_panel', {});
+                sdk.closeModal();
+              },
+              onDocumentSent: (documentData) => {
+                wizardUI.destroy();
+                // Notify activity_panel to refresh documents list
+                sdk.publishMessage('refreshDocuments', 'activity_panel', {});
+                sdk.closeModal();
+              },
+            },
+          });
+        } catch (error) {
+          console.error('Error loading PandaDoc wizard:', error);
+          document.getElementById('pandadoc-container').innerHTML =
+            '<div class="loading error">Failed to load document wizard. Please try again.</div>';
+        }
+      }
+
+      /**
+       * Get URL query parameters
+       */
+      function getUrlParams() {
+        const params = new URLSearchParams(window.location.search);
+        return {
+          location: params.get('location'),
+          entityType: params.get('entityType'),
+          entityId: params.get('entityId'),
+        };
+      }
+
+      /**
+       * Initialize on page load
+       */
+      window.onload = async function () {
+        try {
+          const urlParams = getUrlParams();
+          const isModal = urlParams.location === 'modal';
+
+          if (isModal) {
+            // Signal modal close when this iframe unloads (modal closes)
+            window.addEventListener('beforeunload', signalModalClose);
+            window.addEventListener('unload', signalModalClose);
+            window.addEventListener('pagehide', signalModalClose);
+            // In modal context: get entityType and entityId from xprops, URL params, or context
+            // xprops contains data passed via sdk.showModal()
+            const xprops = window.xprops || {};
+
+            // Priority: xprops > URL params > context
+            entityType = xprops.entityType || urlParams.entityType;
+            entityId = xprops.entityId || urlParams.entityId;
+
+            if (entityType && entityId) {
+              // We have entity info, show the wizard directly
+              PD_wizard({ type: entityType, id: entityId });
+            } else {
+              // Fallback: try to get from Copper context
+              sdk.getContext().then(function (data) {
+                context = data.context;
+                entityType = entityType || getPluralEntityType(context.type);
+                entityId = entityId || String(context.id);
+                PD_wizard(context);
+              });
+            }
+          } else {
+            // Normal activity_panel context: get entity info from Copper context
+            sdk.getContext().then(function (data) {
+              context = data.context;
+              entityType = getPluralEntityType(context.type);
+              entityId = String(context.id);
+              PD_embed(context);
+            });
+
+            // Listen for refresh messages from modal
+            sdk.on('refreshDocuments', function () {
+              if (documentsUI) {
+                // Refresh the documents list by re-embedding
+                documentsUI.reload();
+                //PD_embed(context);
+              }
+            });
+            // Listen for modal close via localStorage signal
+            listenForModalClose(function () {
+              if (documentsUI) {
+                console.log(
+                  'Modal close detected via storage event, refreshing...',
+                );
+                documentsUI.reload();
+              }
+            });
+          }
+        } catch (error) {
+          console.error('Initialization error:', error);
+          document.getElementById('pandadoc-container').innerHTML =
+            '<div class="loading error">Failed to initialize PandaDoc integration. Please refresh the page.</div>';
+        }
+      };
+    </script>
+  </body>
+</html>
