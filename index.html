@@ -177,6 +177,23 @@
               onDocumentOpen(documentInfo) {
                 window.open(documentInfo.documentUrl, '_blank');
               },
+              onWorkflowStart: () => {
+                sdk.showModal({
+                  entityType: entityType,
+                  entityId: entityId,
+                  displayHeader: true,
+                  view: 'workflow',
+                });
+              },
+              onWorkflowOpen: (data) => {
+                sdk.showModal({
+                  entityType: entityType,
+                  entityId: entityId,
+                  displayHeader: true,
+                  view: 'workflow',
+                  processId: data.process.id,
+                });
+              },
             },
           });
         } catch (error) {
@@ -254,6 +271,56 @@
       }
 
       /**
+       * PandaDoc workflow runner - opens a workflow in the modal.
+       * `processId` opens an existing workflow; without it the runner starts a new one.
+       * WorkflowRunner emits no close events; the modal is closed via the Copper modal
+       * header (displayHeader: true), and the unload -> localStorage signal refreshes
+       * the documents list.
+       * @param {string|null} processId
+       */
+      async function PD_process(processId) {
+        try {
+          // Load PandaDoc JavaScript SDK if not already loaded
+          if (typeof PandaDoc === 'undefined') {
+            await loadScript(
+              'https://pd-js-sdk.s3.amazonaws.com/latest/pandadoc-js-sdk.js',
+            );
+          }
+
+          const container = document.getElementById('pandadoc-container');
+          container.innerHTML = ''; // Clear existing content
+
+          const data = {
+            // Same entity context so the workflow is linked to the Copper entity
+            sourceEntity: {
+              type: entityType,
+              id: entityId,
+            },
+          };
+
+          if (processId) {
+            data.process = { id: processId };
+          }
+
+          const processUI = new PandaDoc.WorkflowRunner();
+          processUI.init({
+            el: container,
+            initOptions: {
+              isExternalRunner: false,
+              provider: {
+                name: 'copper',
+              },
+            },
+            data: data,
+          });
+        } catch (error) {
+          console.error('Error loading PandaDoc workflow:', error);
+          document.getElementById('pandadoc-container').innerHTML =
+            '<div class="loading error">Failed to load workflow. Please try again.</div>';
+        }
+      }
+
+      /**
        * Get URL query parameters
        */
       function getUrlParams() {
@@ -262,6 +329,8 @@
           location: params.get('location'),
           entityType: params.get('entityType'),
           entityId: params.get('entityId'),
+          view: params.get('view'),
+          processId: params.get('processId'),
         };
       }
 
@@ -286,16 +355,27 @@
             entityType = xprops.entityType || urlParams.entityType;
             entityId = xprops.entityId || urlParams.entityId;
 
+            // Modal shows either the workflow runner or the document wizard
+            const isWorkflow = (xprops.view || urlParams.view) === 'workflow';
+            const processId = xprops.processId || urlParams.processId || null;
+            const openModalView = function () {
+              if (isWorkflow) {
+                PD_process(processId);
+              } else {
+                PD_wizard({ type: entityType, id: entityId });
+              }
+            };
+
             if (entityType && entityId) {
-              // We have entity info, show the wizard directly
-              PD_wizard({ type: entityType, id: entityId });
+              // We have entity info, show the view directly
+              openModalView();
             } else {
               // Fallback: try to get from Copper context
               sdk.getContext().then(function (data) {
                 context = data.context;
                 entityType = entityType || getPluralEntityType(context.type);
                 entityId = entityId || String(context.id);
-                PD_wizard(context);
+                openModalView();
               });
             }
           } else {
